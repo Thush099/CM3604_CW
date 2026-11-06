@@ -1,5 +1,6 @@
 # factcheck.py
-
+import re
+from nltk.stem import PorterStemmer
 import torch
 from typing import List
 import numpy as np
@@ -82,8 +83,62 @@ class AlwaysEntailedFactChecker(FactChecker):
 
 
 class WordRecallThresholdFactChecker(FactChecker):
+    STOPWORDS = {
+        "a", "an", "the", "and", "or", "but", "if", "while", "of", "at", "by", "for",
+        "with", "about", "against", "between", "into", "through", "during", "before",
+        "after", "above", "below", "to", "from", "up", "down", "in", "out", "on", "off",
+        "over", "under", "again", "further", "then", "once", "here", "there", "when",
+        "where", "why", "how", "all", "any", "both", "each", "few", "more", "most",
+        "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+        "than", "too", "very", "can", "will", "just", "should", "now", "is", "are",
+        "was", "were", "be", "been", "being", "have", "has", "had", "having", "do",
+        "does", "did", "doing", "he", "him", "his", "himself", "she", "her", "hers",
+        "herself", "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+        "who", "whom", "which", "that", "these", "those", "am", "as", "until", "also",
+        "since", "later", "became", "known", "one", "two",
+    }
+
+    def __init__(self, threshold: float = 0.50):
+        self.threshold = threshold
+        self.stemmer = PorterStemmer()
+
+    def preprocess(self, text: str, exclude_tokens=None) -> set:
+        cleaned = text.replace("<s>", " ").replace("</s>", " ").replace('""', " ").lower()
+        tokens = {
+            self.stemmer.stem(w)
+            for w in re.findall(r"[a-z0-9]+", cleaned)
+            if w not in self.STOPWORDS
+        }
+        if exclude_tokens:
+            tokens = tokens - exclude_tokens
+        return tokens
+
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        if not passages:
+            return "NS"
+
+        # Ignore the biography subject's own name tokens (e.g. "Lauren London")
+        raw_title = re.sub(r"\(.*?\)", " ", passages[0].get("title", ""))
+        title_tokens = {self.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_title.lower())}
+
+        fact_words = self.preprocess(fact, exclude_tokens=title_tokens)
+        if not fact_words:
+            fact_words = self.preprocess(fact)
+        if not fact_words:
+            return "NS"
+
+        # Check overlap against each sentence in the passages and take the max score
+        best_score = 0.0
+        for p in passages:
+            for block in re.split(r"</s>\s*<s>|<s>|</s>", p.get("text", "")):
+                for sent in re.split(r"(?<=[.!?])\s+", block):
+                    if sent.strip():
+                        sent_words = self.preprocess(sent)
+                        score = len(fact_words & sent_words) / len(fact_words)
+                        if score > best_score:
+                            best_score = score
+
+        return "S" if best_score >= self.threshold else "NS"
 
 
 class EntailmentFactChecker(FactChecker):
