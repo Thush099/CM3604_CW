@@ -1,0 +1,39 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Datasets & large passage files (keep out of Git if large; share via Moodle download)
+data/*.jsonl
+*.jsonl
+*.zip
+*.tar.gz
+experiments/results/errors_*
+
+# HuggingFace / PyTorch / NLTK local caches
+.cache/
+models/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Clean-room verification temp dirs
+.tmp_verify/
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
