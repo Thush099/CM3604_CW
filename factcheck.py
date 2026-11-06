@@ -26,9 +26,6 @@ class FactExample(object):
         return repr("fact=" + repr(self.fact) + "; label=" + repr(self.label) + "; passages=" + repr(self.passages))
 
 
-# ==============================================================================
-# PART 2 (Model Wrapper) — Branch: feat/part2-entailment (Owner: Thushanth)
-# ==============================================================================
 class EntailmentModel(object):
     def __init__(self, model, tokenizer, cuda=False):
         self.model = model
@@ -36,12 +33,6 @@ class EntailmentModel(object):
         self.cuda = cuda
 
     def check_entailment(self, premise: str, hypothesis: str):
-        """
-        TODO (Part 2): Map 3-class NLI logits [entailment, neutral, contradiction]
-        into either a discrete prediction or a Python float probability/score.
-        Extract a plain Python value (e.g. via .item() or .cpu().tolist()) BEFORE
-        deleting tensors below so no computation graph / GPU memory is retained.
-        """
         with torch.no_grad():
             # Tokenize the premise and hypothesis
             inputs = self.tokenizer(premise, hypothesis, return_tensors='pt', truncation=True, padding=True)
@@ -54,8 +45,6 @@ class EntailmentModel(object):
         # Note that the labels are ["entailment", "neutral", "contradiction"]. There are a number of ways to map
         # these logits or probabilities to classification decisions; you'll have to decide how you want to do this.
 
-        # TODO (Part 2): Compute scalar score or discrete label from `logits` here, e.g.:
-        # result = ...
         raise Exception("Not implemented")
 
         # To prevent out-of-memory (OOM) issues during autograding, we explicitly delete
@@ -92,69 +81,16 @@ class AlwaysEntailedFactChecker(FactChecker):
         return "S"
 
 
-# ==============================================================================
-# PART 1: Word Overlap — Branch: feat/part1-word-overlap (Owner: Yasith)
-# Target Accuracy: >= 75% (at least 166 / 221 on dev_labeled_ChatGPT.jsonl)
-# ==============================================================================
 class WordRecallThresholdFactChecker(FactChecker):
-    def __init__(self, threshold: float = 0.5):
-        """
-        TODO (Part 1): Initialize threshold and any preprocessing resources
-        (e.g., stop words, stemmer, or corpus statistics using packages in requirements.txt).
-        """
-        self.threshold = threshold
-
-    def preprocess(self, text: str) -> List[str]:
-        """
-        TODO (Part 1): Clean raw text (note `<s>` / `</s>` tags in passages) and tokenize,
-        optionally applying lowercasing, punctuation removal, stop-word filtering, or stemming.
-        """
-        raise NotImplementedError("TODO (Part 1): Implement WordRecallThresholdFactChecker.preprocess")
-
-    def score_overlap(self, fact: str, candidate_text: str) -> float:
-        """
-        TODO (Part 1): Return a real-valued lexical overlap/similarity score between
-        `fact` and `candidate_text` (can also be reused by Part 2 for pruning).
-        """
-        raise NotImplementedError("TODO (Part 1): Implement WordRecallThresholdFactChecker.score_overlap")
-
     def predict(self, fact: str, passages: List[dict]) -> str:
-        """
-        TODO (Part 1): Aggregate overlap score across `passages` and compare against
-        `self.threshold` to return "S" (Supported) or "NS" (Not Supported).
-        """
         raise Exception("Implement me")
 
 
-# ==============================================================================
-# PART 2: Textual Entailment — Branch: feat/part2-entailment (Owner: Thushanth)
-# Target Accuracy: >= 83% (at least 184 / 221 on dev_labeled_ChatGPT.jsonl)
-# ==============================================================================
 class EntailmentFactChecker(FactChecker):
-    def __init__(self, ent_model, ent_threshold: float = 0.5, prune_threshold: float = 0.0):
+    def __init__(self, ent_model):
         self.ent_model = ent_model
-        self.ent_threshold = ent_threshold
-        self.prune_threshold = prune_threshold
-
-    def extract_clean_sentences(self, passages: List[dict]) -> List[str]:
-        """
-        TODO (Part 2): Strip Wikipedia markup (e.g. `<s>`, `</s>`, empty quotes)
-        and split `passages` into clean candidate premise sentences.
-        """
-        raise NotImplementedError("TODO (Part 2): Implement EntailmentFactChecker.extract_clean_sentences")
-
-    def should_prune(self, fact: str, premise_sent: str) -> bool:
-        """
-        TODO (Part 2): Return True when lexical overlap between `fact` and `premise_sent`
-        falls below `self.prune_threshold` so unlikely sentences skip DeBERTa inference.
-        """
-        raise NotImplementedError("TODO (Part 2): Implement EntailmentFactChecker.should_prune")
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        """
-        TODO (Part 2): Run `self.ent_model.check_entailment(premise, fact)` over non-pruned
-        candidate sentences and return "S" or "NS" (max score over sentences or discrete match).
-        """
         raise Exception("Implement me")
 
 
