@@ -30,30 +30,34 @@ class FactExample(object):
 class EntailmentModel(object):
     def __init__(self, model, tokenizer, cuda=False):
         self.model = model
+        self.model.eval()
         self.tokenizer = tokenizer
         self.cuda = cuda
 
     def check_entailment(self, premise: str, hypothesis: str):
         with torch.no_grad():
             # Tokenize the premise and hypothesis
-            inputs = self.tokenizer(premise, hypothesis, return_tensors='pt', truncation=True, padding=True)
+            inputs = self.tokenizer(premise, hypothesis, return_tensors='pt', truncation=True, max_length=512, padding=True)
             if self.cuda:
                 inputs = {key: value.to('cuda') for key, value in inputs.items()}
             # Get the model's prediction
             outputs = self.model(**inputs)
             logits = outputs.logits
+            probs = torch.softmax(logits, dim=-1)
+            entail_prob = float(probs[0, 0].item())
+            contra_prob = float(probs[0, 2].item())
 
         # Note that the labels are ["entailment", "neutral", "contradiction"]. There are a number of ways to map
         # these logits or probabilities to classification decisions; you'll have to decide how you want to do this.
 
-        raise Exception("Not implemented")
-
         # To prevent out-of-memory (OOM) issues during autograding, we explicitly delete
         # objects inputs, outputs, logits, and any results that are no longer needed after the computation.
-        del inputs, outputs, logits
+        del inputs, outputs, logits, probs
         gc.collect()
 
-        # return something
+        if contra_prob > entail_prob:
+            return 0.0
+        return entail_prob
 
 
 class FactChecker(object):
@@ -98,8 +102,9 @@ class WordRecallThresholdFactChecker(FactChecker):
         "since", "later", "became", "known", "one", "two",
     }
 
-    def __init__(self, threshold: float = 0.50):
+    def __init__(self, threshold: float = 0.50, metric: str = "recall"):
         self.threshold = threshold
+        self.metric = metric
         self.stemmer = PorterStemmer()
 
     def preprocess(self, text: str, exclude_tokens=None) -> set:
@@ -134,7 +139,11 @@ class WordRecallThresholdFactChecker(FactChecker):
                 for sent in re.split(r"(?<=[.!?])\s+", block):
                     if sent.strip():
                         sent_words = self.preprocess(sent)
-                        score = len(fact_words & sent_words) / len(fact_words)
+                        if self.metric == "jaccard":
+                            union = len(fact_words | sent_words)
+                            score = len(fact_words & sent_words) / union if union > 0 else 0.0
+                        else:
+                            score = len(fact_words & sent_words) / len(fact_words)
                         if score > best_score:
                             best_score = score
 
@@ -142,13 +151,94 @@ class WordRecallThresholdFactChecker(FactChecker):
 
 
 class EntailmentFactChecker(FactChecker):
-    def __init__(self, ent_model):
+    def __init__(self, ent_model, ent_threshold=0.38, prune_threshold=0.20):
         self.ent_model = ent_model
+        self.ent_threshold = ent_threshold
+        self.prune_threshold = prune_threshold
+        self.word_checker = WordRecallThresholdFactChecker()
+
+    def get_windows(self, passages: List[dict]):
+        windows = []
+        seen = set()
+        for p in passages:
+            raw_title = p.get("title", "").strip()
+            clean_title = re.sub(r"\s*\(.*?\)\s*", "", raw_title).strip()
+            title_words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", clean_title) if len(w) > 2]
+
+            for block in re.split(r"</s>\s*<s>|<s>|</s>", p.get("text", "")):
+                block = re.sub(r"\{\{[^}]*(\}\}|$)", " ", block)
+                block = block.replace('""', "").replace("()", "")
+                block = re.sub(r"\s+", " ", block).strip()
+                if not block:
+                    continue
+                if raw_title and block.startswith(f"{raw_title} {raw_title}"):
+                    block = block[len(raw_title) + 1:].strip()
+
+                parts = re.split(
+                    r"(?<!\bMr)(?<!\bMs)(?<!\bDr)(?<!\bSt)(?<!\bJr)(?<!\bSr)(?<!\bNo)(?<!\b[A-Z])\.\s+(?=[A-Z0-9\"'-])",
+                    block,
+                )
+                sents = []
+                for s in parts:
+                    s = s.strip()
+                    if not s:
+                        continue
+                    if not s.endswith((".", "!", "?")):
+                        s += "."
+                    if len(re.findall(r"[A-Za-z0-9]+", s)) > 1:
+                        sents.append(s)
+
+                merged = []
+                i = 0
+                while i < len(sents):
+                    if i + 1 < len(sents) and len(re.findall(r"[A-Za-z0-9]+", sents[i])) <= 4:
+                        merged.append(f"{sents[i]} {sents[i + 1]}")
+                        i += 2
+                    else:
+                        merged.append(sents[i])
+                        i += 1
+
+                for j, sent in enumerate(merged):
+                    units = [sent] if j == 0 else [sent, f"{merged[j - 1]} {sent}"]
+                    for u in units:
+                        if clean_title and title_words and not any(tw in u.lower() for tw in title_words):
+                            ctx = f"{clean_title}: {u}"
+                        else:
+                            ctx = u
+                        if ctx not in seen:
+                            seen.add(ctx)
+                            windows.append((u, ctx))
+        return windows
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        if not passages:
+            return "NS"
 
+        raw_title = re.sub(r"\(.*?\)", " ", passages[0].get("title", ""))
+        title_tokens = {self.word_checker.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_title.lower())}
 
+        fact_words = self.word_checker.preprocess(fact, exclude_tokens=title_tokens)
+        if not fact_words:
+            fact_words = self.word_checker.preprocess(fact)
+        if not fact_words:
+            return "NS"
+
+        # Prune sentences with low word overlap before running DeBERTa
+        candidates = []
+        for raw_u, ctx_u in self.get_windows(passages):
+            u_words = {self.word_checker.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_u.lower())}
+            overlap = len(fact_words & u_words) / len(fact_words)
+            if overlap >= self.prune_threshold and overlap > 0:
+                candidates.append((overlap, -len(raw_u), ctx_u))
+
+        candidates.sort(reverse=True)
+        for _, _, premise in candidates[:5]:
+            prob = self.ent_model.check_entailment(premise, fact)
+            if prob >= self.ent_threshold:
+                return "S"
+
+        return "NS"
+    
 # OPTIONAL
 class DependencyRecallThresholdFactChecker(FactChecker):
     def __init__(self):
