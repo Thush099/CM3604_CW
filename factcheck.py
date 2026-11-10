@@ -122,7 +122,6 @@ class WordRecallThresholdFactChecker(FactChecker):
         if not passages:
             return "NS"
 
-        # Ignore the biography subject's own name tokens (e.g. "Lauren London")
         raw_title = re.sub(r"\(.*?\)", " ", passages[0].get("title", ""))
         title_tokens = {self.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_title.lower())}
 
@@ -132,7 +131,6 @@ class WordRecallThresholdFactChecker(FactChecker):
         if not fact_words:
             return "NS"
 
-        # Check overlap against each sentence in the passages and take the max score
         best_score = 0.0
         for p in passages:
             for block in re.split(r"</s>\s*<s>|<s>|</s>", p.get("text", "")):
@@ -211,35 +209,14 @@ class EntailmentFactChecker(FactChecker):
         return windows
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        """Classify whether `fact` is supported by the given passages.
-
-        Pipeline:
-            1. Extract content-word stems from the fact, excluding tokens
-               that appear in the primary passage title.
-            2. Prune candidate premise windows by lexical overlap with the fact.
-            3. Run the entailment model on the top-ranked candidates only.
-
-        Args:
-            fact: The claim to verify.
-            passages: Retrieved passages, each a dict with a "title" key;
-                the first passage is treated as the primary document.
-
-        Returns:
-            "S" if any candidate premise entails the fact, otherwise "NS".
-        """
-        max_candidates = 5
-        stemmer = self.word_checker.stemmer
-
-        def stem_tokens(text: str) -> set:
-            """Lowercase, tokenise and stem `text`, returning a set of stems."""
-            return {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", text.lower())}
-
         if not passages:
             return "NS"
 
-        # Step 1: content words of the fact, ignoring the page subject's name
+        max_candidates = 5
+        stemmer = self.word_checker.stemmer
+
         clean_title = re.sub(r"\(.*?\)", " ", passages[0].get("title", ""))
-        title_tokens = stem_tokens(clean_title)
+        title_tokens = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", clean_title.lower())}
 
         fact_words = self.word_checker.preprocess(fact, exclude_tokens=title_tokens)
         if not fact_words:
@@ -247,24 +224,19 @@ class EntailmentFactChecker(FactChecker):
         if not fact_words:
             return "NS"
 
-        # Step 2: prune windows with low lexical overlap before calling the model
         candidates = []
         for raw_sentence, context in self.get_windows(passages):
-            sentence_words = stem_tokens(raw_sentence)
+            sentence_words = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", raw_sentence.lower())}
             overlap = len(fact_words & sentence_words) / len(fact_words)
             if overlap > 0 and overlap >= self.prune_threshold:
                 candidates.append((overlap, -len(raw_sentence), context))
 
-        # Highest overlap first; ties broken by shorter sentence
         candidates.sort(reverse=True)
-
-        # Step 3: entailment check on the top-ranked candidates
         for _, _, premise in candidates[:max_candidates]:
             if self.ent_model.check_entailment(premise, fact) >= self.ent_threshold:
                 return "S"
 
         return "NS"
-
 
 
 # OPTIONAL
