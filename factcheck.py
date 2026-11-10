@@ -210,34 +210,105 @@ class EntailmentFactChecker(FactChecker):
                             windows.append((u, ctx))
         return windows
 
-    def predict(self, fact: str, passages: List[dict]) -> str:
-        if not passages:
-            return "NS"
+    import re
+from typing import List, NamedTuple, Set
 
-        raw_title = re.sub(r"\(.*?\)", " ", passages[0].get("title", ""))
-        title_tokens = {self.word_checker.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_title.lower())}
+# Verdict labels
+SUPPORTED = "S"
+NOT_SUPPORTED = "NS"
 
-        fact_words = self.word_checker.preprocess(fact, exclude_tokens=title_tokens)
-        if not fact_words:
-            fact_words = self.word_checker.preprocess(fact)
-        if not fact_words:
-            return "NS"
+# Maximum number of pruned candidates passed to the entailment model
+MAX_CANDIDATES = 5
 
-        # Prune sentences with low word overlap before running DeBERTa
-        candidates = []
-        for raw_u, ctx_u in self.get_windows(passages):
-            u_words = {self.word_checker.stemmer.stem(w) for w in re.findall(r"[a-z0-9]+", raw_u.lower())}
-            overlap = len(fact_words & u_words) / len(fact_words)
-            if overlap >= self.prune_threshold and overlap > 0:
-                candidates.append((overlap, -len(raw_u), ctx_u))
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_PARENTHETICAL_PATTERN = re.compile(r"\(.*?\)")
 
-        candidates.sort(reverse=True)
-        for _, _, premise in candidates[:5]:
-            prob = self.ent_model.check_entailment(premise, fact)
-            if prob >= self.ent_threshold:
-                return "S"
 
-        return "NS"
+class _Candidate(NamedTuple):
+    """A premise window scored by lexical overlap with the fact.
+
+    Field order defines sort priority: higher overlap first, then shorter
+    raw sentence (stored as a negative length), then the context string.
+    """
+    overlap: float
+    neg_length: int
+    premise: str
+
+
+def _stemmed_tokens(self, text: str) -> Set[str]:
+    """Lowercase, tokenise and stem `text`, returning the set of stems."""
+    return {
+        self.word_checker.stemmer.stem(token)
+        for token in _TOKEN_PATTERN.findall(text.lower())
+    }
+
+
+def predict(self, fact: str, passages: List[dict]) -> str:
+    """Classify whether `fact` is supported by the given passages.
+
+    Pipeline:
+        1. Extract content words from the fact, excluding tokens that
+           appear in the primary passage title (they carry little signal).
+        2. Prune candidate premise windows by lexical overlap with the fact.
+        3. Run the entailment model on the top-ranked candidates only.
+
+    Args:
+        fact: The claim to verify.
+        passages: Retrieved passages, each a dict with at least a "title"
+            key; the first passage is treated as the primary document.
+
+    Returns:
+        "S" if any candidate premise entails the fact, otherwise "NS".
+    """
+    if not passages:
+        return NOT_SUPPORTED
+
+    fact_words = self._extract_fact_words(fact, passages[0].get("title", ""))
+    if not fact_words:
+        return NOT_SUPPORTED
+
+    candidates = self._rank_candidates(fact_words, passages)
+
+    for candidate in candidates[:MAX_CANDIDATES]:
+        probability = self.ent_model.check_entailment(candidate.premise, fact)
+        if probability >= self.ent_threshold:
+            return SUPPORTED
+
+    return NOT_SUPPORTED
+
+
+def _extract_fact_words(self, fact: str, title: str) -> Set[str]:
+    """Return content-word stems of `fact`, excluding title tokens.
+
+    Falls back to the unfiltered preprocessing if excluding the title
+    leaves no words.
+    """
+    clean_title = _PARENTHETICAL_PATTERN.sub(" ", title)
+    title_tokens = self._stemmed_tokens(clean_title)
+
+    words = self.word_checker.preprocess(fact, exclude_tokens=title_tokens)
+    return words or self.word_checker.preprocess(fact)
+
+
+def _rank_candidates(
+    self, fact_words: Set[str], passages: List[dict]
+) -> List[_Candidate]:
+    """Score premise windows by overlap with `fact_words`, best first.
+
+    Windows whose overlap falls below `self.prune_threshold`, or is zero,
+    are discarded to avoid unnecessary entailment-model calls.
+    """
+    candidates: List[_Candidate] = []
+
+    for raw_sentence, context in self.get_windows(passages):
+        sentence_words = self._stemmed_tokens(raw_sentence)
+        overlap = len(fact_words & sentence_words) / len(fact_words)
+
+        if overlap > 0 and overlap >= self.prune_threshold:
+            candidates.append(_Candidate(overlap, -len(raw_sentence), context))
+
+    candidates.sort(reverse=True)
+    return candidates
     
 # OPTIONAL
 class DependencyRecallThresholdFactChecker(FactChecker):
