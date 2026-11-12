@@ -29,6 +29,9 @@ models/
 # Clean-room verification temp dirs
 .tmp_verify/
 
+# Internal teammate guide PDFs (do not submit or push)
+*_Task_Guide.pdf
+
 # Jupyter Notebooks checkpoints
 .ipynb_checkpoints/
 
