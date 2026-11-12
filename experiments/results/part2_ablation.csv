@@ -1,0 +1,10 @@
+id,representation,binary_mapping,pruning,nli_calls,pct_saved,dev_accuracy,cv_5fold
+P2-1,Full Passages (<s> cleaned),Discrete argmax == 0,"ov>=0.34, topK=5",193/692,72.11%,82.81%,-
+P2-2,Full Passages (<s> cleaned),Guard + P(ent) >= 0.38,"ov>=0.34, topK=5",193/692,72.11%,83.26%,83.26%
+P2-3,Isolated 1-Sentence,Discrete argmax == 0,"ov>=0.20, topK=5",406/5764,92.96%,82.81%,-
+P2-4,Isolated 1-Sentence,Guard + P(ent) >= 0.38,"ov>=0.20, topK=5",401/5764,93.04%,83.26%,81.45%
+P2-5,Title-Grounded 1-Sentence,Guard + P(ent) >= 0.38,"ov>=0.20, topK=5",379/5764,93.42%,83.71%,81.00%
+P2-6,Contextual 1&2-Sent Windows,Discrete argmax == 0,"ov>=0.20, topK=5",449/8765,94.88%,86.43%,-
+P2-7,Contextual 1&2-Sent Windows,P(ent) >= 0.38 (no contra guard),"ov>=0.20, topK=5",438/8765,95.00%,88.24%,87.78%
+P2-8,Contextual 1&2-Sent Windows,Guard + P(ent) >= 0.38,"ov>=0.34, topK=5",256/8765,97.08%,87.78%,85.97%
+P2-9,Contextual 1&2-Sent Windows [Selected],Guard + P(ent) >= 0.38,"ov>=0.20, topK=5",438/8765,95.00%,88.24%,86.88%
