@@ -21,7 +21,7 @@ Each record in `data/dev_labeled_ChatGPT.jsonl` and `data/passages_bm25_ChatGPT_
 
 ### 2.1 Preprocessing Decisions and Justification
 
-The retrieved passages in `passages_bm25_ChatGPT_humfacts.jsonl` are untokenized Wikipedia excerpts containing structural tags (`<s>`, `</s>`) and empty quotation marks (`""`) left behind after markup stripping. In [`WordRecallThresholdFactChecker`](../factcheck.py), we tested five preprocessing stages:
+In discrete symbolic text models over vocabulary $V$, one-hot vectors in $\{0, 1\}^{|V|}$ are sparse, orthogonal, and equidistant ($\|e_i - e_j\|_2 = \sqrt{2}$ for $i \ne j$), while Bag-of-Words (BoW) aggregation discards word order (`Deep Learning Lectures (1)`, Slides 6–11; `Deep Learning Lectures (2)`, Slides 14–16, 53). Consequently, surface-level normalization that maps morphological variants into shared terms in $V$ is essential before computing set overlap or TF-IDF cosine similarity. The retrieved passages in `passages_bm25_ChatGPT_humfacts.jsonl` are untokenized Wikipedia excerpts containing structural tags (`<s>`, `</s>`) and empty quotation marks (`""`) left behind after markup stripping. In [`WordRecallThresholdFactChecker`](../factcheck.py), we tested five preprocessing stages:
 
 1. **Markup Removal and Lowercasing:** `preprocess()` replaces `<s>`, `</s>`, and `""` with spaces and lowercases text. Otherwise, boundary tokens such as `<s>marianne` or `actor.</s>` fail to match clean claim words.
 2. **Alphanumeric Tokenization (`[a-z0-9]+`):** Extracting alphanumeric words strips punctuation cleanly while retaining dates and years (such as `1931` and `1987`), which are often needed to verify biographical facts.
@@ -47,7 +47,7 @@ Passages are split along `<s>`/`</s>` block boundaries and sentence punctuation 
 
 ### 2.3 Validation Protocol and Part 1 Experimental Results
 
-Since no separate test split is provided, optimizing a threshold directly on all 221 facts risks overfitting to specific biographies. To check generalization properly, `experiments/ablation_study.py` runs **5-fold grouped cross-validation partitioned by biography index** ($\text{bio\_idx} \bmod 5$), keeping all facts from the same biography in a single fold.
+From the classical error decomposition (`Lecture 8`, Slides 2–13), a linear threshold over BoW features has bounded hypothesis-class capacity $\mathcal{F}$ (yielding higher *approximation error* on compositional claims), whereas optimizing $\tau$ directly across all 221 facts risks *estimation error* by overfitting to specific biography vocabularies. Because no separate test split is provided, `experiments/ablation_study.py` runs **5-fold grouped cross-validation partitioned by biography index** ($\text{bio\_idx} \bmod 5$), keeping all facts from the same biography in a single fold to control estimation error.
 
 | ID | Scoring Metric & Granularity | Preprocessing Configuration | Best $\tau$ | Dev Accuracy | 5-Fold Grouped CV | Runtime (s) |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
@@ -78,7 +78,11 @@ Each preprocessing stage improves generalization on unigram recall: filtering th
 
 ### 3.1 Passage Cleaning and Contextual Windowing (`get_windows`)
 
-For Part 2, `factchecking_main.py` loads `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` (He et al., 2021; Laurer et al., 2024), a DeBERTa-v3-base sequence classifier pre-trained on MNLI (Williams et al., 2018), FEVER (Thorne et al., 2018), and ANLI (Nie et al., 2020) whose output logits represent `[0: entailment, 1: neutral, 2: contradiction]`.
+For Part 2, `factchecking_main.py` loads `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` (He et al., 2021; Laurer et al., 2024), a Transformer architecture trained via self-supervised pre-training and supervised transfer learning (Devlin et al., 2019; `Deep Learning Lectures (2)`, Slides 28, 53; `Lecture 10`, Slides 10–27) on MNLI (Williams et al., 2018), FEVER (Thorne et al., 2018), and ANLI (Nie et al., 2020), whose output logits represent `[0: entailment, 1: neutral, 2: contradiction]`.
+
+Unlike orderless BoW models, the Transformer tokenizer applies **sub-word tokenization** (`Lecture 7`, Slides 20, 50) to handle out-of-vocabulary names and morphological suffixes, and encodes each premise-hypothesis pair as `[CLS] premise [SEP] hypothesis [SEP]` combining token, segment ($E_A, E_B$), and disentangled relative positional embeddings (`Lecture 7`, Slides 43–50). Across encoder layers, **Multi-Head Self-Attention** (Vaswani et al., 2017; `Lecture 7`, Slides 38–42):
+$$\text{SelfAttention}(Q_i, K, V) = \sum_j \text{softmax}_j\!\left(\frac{Q_i \cdot K^T}{\sqrt{d_k}}\right) V_j$$
+computes bidirectional cross-attention between premise and hypothesis tokens before projecting the pooled `[CLS]` representation into 3-class logits $z = [z_{\text{ent}}, z_{\text{neu}}, z_{\text{con}}]$.
 
 Evaluating isolated single sentences frequently breaks cross-sentence pronoun references and section lists. Conversely, passing an entire 200-word Wikipedia chunk dilutes attention across unrelated biographical events. To balance local precision with coreference context, [`EntailmentFactChecker.get_windows`](../factcheck.py) applies four steps:
 
@@ -89,7 +93,9 @@ Evaluating isolated single sentences frequently breaks cross-sentence pronoun re
 
 ### 3.2 Converting Three-Class Outputs to Binary Decisions
 
-For a premise window $w$ and hypothesis $F$, [`EntailmentModel.check_entailment`](../factcheck.py) applies softmax over the three NLI logits and enforces a **contradiction guard** before returning a score:
+For a premise window $w$ and hypothesis $F$, [`EntailmentModel.check_entailment`](../factcheck.py) applies softmax normalization over the three NLI logits $z = [z_{\text{ent}}, z_{\text{neu}}, z_{\text{con}}]$ (`Lecture 2`, Slide 16; `Lecture 7`, Slide 25):
+$$P(y = c \mid w, F) = \frac{\exp(z_c)}{\sum_{k \in \{\text{ent}, \text{neu}, \text{con}\}} \exp(z_k)}$$
+and enforces a **contradiction guard** before returning a calibrated confidence score (`Lecture 9`, Slide 20):
 $$s(w, F) = \begin{cases} 0.0 & \text{if } P(\text{con} \mid w, F) > P(\text{ent} \mid w, F), \\ P(\text{ent} \mid w, F) & \text{otherwise.} \end{cases}$$
 A claim is predicted `"S"` if any retained candidate window satisfies $s(w, F) \ge \tau_{\text{ent}}$ (`ent_threshold=0.38`), which is mathematically equivalent to checking $\max_{w} s(w, F) \ge \tau_{\text{ent}}$, and `"NS"` otherwise. Rejecting cases where contradiction outweighs entailment prevents high-contradiction examples from passing a threshold below `0.50`, while setting $\tau_{\text{ent}} = 0.38$ captures legitimate biographical paraphrases where minor phrasing omissions divide probability mass between `entailment` and `neutral`.
 
@@ -98,7 +104,7 @@ A claim is predicted `"S"` if any retained candidate window satisfies $s(w, F) \
 Across all 221 examples, `get_windows()` produces `8,765` candidate windows. Running NLI inference on every window is too slow on CPU and increases false-positive exposure from unrelated sentences. [`EntailmentFactChecker.predict`](../factcheck.py) reduces compute and memory usage cleanly:
 - **Overlap Filtering and Top-$K$ Ranking:** Computes title-excluded stemmed unigram recall against each raw window sentence, discards candidates below `prune_threshold = 0.20`, sorts survivors by `(overlap, -len(raw_sentence))` descending (preferring shorter single sentences on ties), and retains at most `max_candidates = 5`.
 - **Early Exit Equivalence:** Candidates are scored in rank order and `predict()` returns `"S"` immediately once the running maximum satisfies $\max_w s(w, F) \ge 0.38$. Because $\max_w s(w, F) \ge \tau_{\text{ent}} \iff \exists w : s(w, F) \ge \tau_{\text{ent}}$, early termination yields identical binary predictions while executing only `438` NLI calls across the 221 examples (`95.00%` compute saved vs. scoring all `8,765` windows, finishing in `248s` / `4 min 08 s` on CPU — a `20x` speedup over unpruned evaluation).
-- **OOM Prevention:** Every forward pass in `check_entailment()` runs under `with torch.no_grad():` with `truncation=True, max_length=512`, extracts Python `float` scalars via `.item()`, and calls `del inputs, outputs, logits, probs; gc.collect()` immediately afterwards.
+- **OOM Prevention:** `EntailmentModel.__init__` calls `self.model.eval()` to freeze **Dropout regularization** masks ($p$) and enable deterministic test-time scaling (`Deep Learning Lectures (1)`, Slides 35–38). Every forward pass in `check_entailment()` runs under `with torch.no_grad():`—disabling **computation graph** construction and intermediate activation caching required for backpropagation (`Lecture 1`, Slide 44; `Lecture 2`, Slide 35)—with `truncation=True, max_length=512`, extracts Python `float` scalars via `.item()`, and calls `del inputs, outputs, logits, probs; gc.collect()` immediately afterwards.
 
 ### 3.4 Part 2 Experimental Ablation Study
 
@@ -194,7 +200,7 @@ On the full 221-example benchmark, [`EntailmentFactChecker`](../factcheck.py) re
 
 Our error analysis highlights three concrete directions for strengthening biographical fact verification:
 
-1. **Semantic Fallback in Candidate Pruning:** Requiring hard Porter-stem overlap (`ov >= 0.20`) saves substantial CPU time and filters noisy sentences, yet causes every Category 1 False Negative (*London* vs. *United Kingdom*, *TV* vs. *television*, *Argentine* vs. *Argentinian*). Adding a fast dense bi-encoder (`all-MiniLM-L6-v2`) or WordNet synonym/lemma fallback whenever stem overlap is low would retrieve paraphrases and geographic links without re-scoring every window with DeBERTa.
+1. **Semantic Fallback in Candidate Pruning:** Requiring hard Porter-stem overlap (`ov >= 0.20`) saves substantial CPU time and filters noisy sentences, yet causes every Category 1 False Negative (*London* vs. *United Kingdom*, *TV* vs. *television*, *Argentine* vs. *Argentinian*). Adding a **Siamese dense bi-encoder** (`all-MiniLM-L6-v2`; `Lecture 9`, Slides 21–34) that maps sentences into continuous embedding space $\mathbb{R}^d$ and scores **cosine similarity** $\cos(u, v) = \frac{u \cdot v}{\|u\|_2 \|v\|_2}$ (`Deep Learning Lectures (1)`, Slide 20)—or a WordNet synonym/lemma fallback whenever stem overlap is low—would retrieve paraphrases and geographic links without full cross-attention cost.
 2. **Boundary-Aware Context & Coreference Resolution:** Clipped BM25 chunks combined with title prepending and 2-sentence windows resolve pronouns cleanly in most cases, yet induce false employer links in `FP_03` (*WKNR* vs. *WTAM*). Dropping incomplete leading fragments that start mid-clause (`lowercase` start) and running in-place coreference substitution (*"He"* $\to$ *"Ardeshir Zahedi"*) would preserve referent clarity without cross-entity leakage.
 3. **Pragmatic Calibration and Relevance Filtering:** Strict logical NLI models conflict with pragmatic FActScore annotations in both directions, rejecting hedged summaries (`FN_01`) while endorsing off-subject background truths (`FP_02`, *"Cleveland is in Ohio"*). Fine-tuning an explicit calibration head on biographical annotations alongside a simple subject-relevance check would better separate true support from `NS` and `IR`.
 
@@ -202,6 +208,7 @@ Our error analysis highlights three concrete directions for strengthening biogra
 
 ## References
 
+- Devlin, J., Chang, M.-W., Lee, K. and Toutanova, K. (2019) 'BERT: Pre-training of deep bidirectional transformers for language understanding', *Proceedings of NAACL-HLT*, pp. 4171–4186.
 - He, P., Gao, J. and Chen, W. (2021) 'DeBERTaV3: Improving DeBERTa using ELECTRA-style pre-training with gradient-disentangled embedding sharing', *arXiv preprint arXiv:2111.09543*.
 - Laurer, M., van Atteveldt, W., Casas, A. and Welbers, K. (2024) 'Less annotating, more classifying: Addressing the data scarcity issue of supervised machine learning with deep transfer learning and active learning', *Political Analysis*, 32(1), pp. 84–100.
 - Lin, C.-Y. (2004) 'ROUGE: A package for automatic evaluation of summaries', *Text Summarization Branches Out*, ACL, pp. 74–81.
@@ -210,6 +217,7 @@ Our error analysis highlights three concrete directions for strengthening biogra
 - Porter, M.F. (1980) 'An algorithm for suffix stripping', *Program*, 14(3), pp. 130–137.
 - Robertson, S. and Zaragoza, H. (2009) 'The probabilistic relevance framework: BM25 and beyond', *Foundations and Trends in Information Retrieval*, 3(4), pp. 333–389.
 - Thorne, J., Vlachos, A., Christodoulopoulos, C. and Mittal, A. (2018) 'FEVER: a large-scale dataset for fact extraction and VERification', *Proceedings of NAACL-HLT*, pp. 809–819.
+- Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., Kaiser, Ł. and Polosukhin, I. (2017) 'Attention is all you need', *Advances in Neural Information Processing Systems (NeurIPS)*, 30, pp. 5998–6008.
 - Williams, A., Nangia, N. and Bowman, S.R. (2018) 'A broad-coverage challenge corpus for sentence understanding through inference', *Proceedings of NAACL-HLT*, pp. 1112–1122.
 
 ---
