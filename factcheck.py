@@ -30,7 +30,8 @@ class FactExample(object):
 class EntailmentModel(object):
     def __init__(self, model, tokenizer, cuda=False):
         self.model = model
-        self.model.eval()
+        if self.model is not None:
+            self.model.eval()
         self.tokenizer = tokenizer
         self.cuda = cuda
 
@@ -232,8 +233,12 @@ class EntailmentFactChecker(FactChecker):
                 candidates.append((overlap, -len(raw_sentence), context))
 
         candidates.sort(reverse=True)
+        best_score = 0.0
         for _, _, premise in candidates[:max_candidates]:
-            if self.ent_model.check_entailment(premise, fact) >= self.ent_threshold:
+            score = self.ent_model.check_entailment(premise, fact)
+            if score > best_score:
+                best_score = score
+            if best_score >= self.ent_threshold:
                 return "S"
 
         return "NS"
