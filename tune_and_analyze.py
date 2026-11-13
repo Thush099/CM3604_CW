@@ -12,34 +12,108 @@ from factcheck import EntailmentFactChecker, EntailmentModel
 from factchecking_main import print_eval_stats, read_fact_examples, read_passages
 
 
+def extract_merged_sentences(block: str, raw_title: str):
+    """Clean one passage block and merge short headers into following sentences."""
+    block = re.sub(r"\{\{[^}]*(\}\}|$)", " ", block)
+    block = block.replace('""', "").replace("()", "")
+    block = re.sub(r"\s+", " ", block).strip()
+    if not block:
+        return []
+    if raw_title and block.startswith(f"{raw_title} {raw_title}"):
+        block = block[len(raw_title) + 1:].strip()
+
+    parts = re.split(
+        r"(?<!\bMr)(?<!\bMs)(?<!\bDr)(?<!\bSt)(?<!\bJr)(?<!\bSr)(?<!\bNo)(?<!\b[A-Z])\.\s+(?=[A-Z0-9\"'-])",
+        block,
+    )
+    sents = []
+    for s in parts:
+        s = s.strip()
+        if not s:
+            continue
+        if not s.endswith((".", "!", "?")):
+            s += "."
+        if len(re.findall(r"[A-Za-z0-9]+", s)) > 1:
+            sents.append(s)
+
+    merged = []
+    i = 0
+    while i < len(sents):
+        if i + 1 < len(sents) and len(re.findall(r"[A-Za-z0-9]+", sents[i])) <= 4:
+            merged.append(f"{sents[i]} {sents[i + 1]}")
+            i += 2
+        else:
+            merged.append(sents[i])
+            i += 1
+    return merged
+
+
+def build_variant_windows(passages, mode: str, checker):
+    """Construct premise windows for Part 2 preprocessing ablations."""
+    if mode == "full_windows":
+        return checker.get_windows(passages)
+
+    windows = []
+    seen = set()
+    for p in passages:
+        raw_title = p.get("title", "").strip()
+        text = p.get("text", "")
+        if mode == "raw_passages":
+            ctx = re.sub(r"\s+", " ", text).strip()
+            if ctx and ctx not in seen:
+                seen.add(ctx)
+                windows.append((ctx, ctx))
+            continue
+
+        for block in re.split(r"</s>\s*<s>|<s>|</s>", text):
+            merged = extract_merged_sentences(block, raw_title)
+            for j, sent in enumerate(merged):
+                units = [sent] if (mode == "single_no_title" or j == 0) else [sent, f"{merged[j - 1]} {sent}"]
+                for u in units:
+                    if u not in seen:
+                        seen.add(u)
+                        windows.append((u, u))
+    return windows
+
+
+def rank_candidates(ex, windows, word_checker, min_overlap: float):
+    """Score lexical overlap against non-title claim tokens and sort candidates descending."""
+    stemmer = word_checker.stemmer
+    clean_title = re.sub(r"\(.*?\)", " ", ex.passages[0].get("title", "")) if ex.passages else ""
+    title_tokens = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", clean_title.lower())}
+    fact_words = word_checker.preprocess(ex.fact, exclude_tokens=title_tokens)
+    if not fact_words:
+        fact_words = word_checker.preprocess(ex.fact)
+
+    cands = []
+    if fact_words:
+        for raw_sent, context in windows:
+            sentence_words = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", raw_sent.lower())}
+            overlap = len(fact_words & sentence_words) / len(fact_words)
+            if overlap > 0 and overlap >= min_overlap:
+                cands.append((overlap, -len(raw_sent), context))
+    cands.sort(reverse=True)
+    return cands
+
+
 def score_unique_candidates(examples, checker, hf_model, tokenizer, device: str):
-    """Score top-5 candidate windows down to overlap >= 0.15 once per unique (premise, fact)."""
-    stemmer = checker.word_checker.stemmer
-    total_windows = 0
-    per_ex_cands = []
+    """Score top-5 candidates across threshold/pruning sweeps and preprocessing variants."""
+    window_modes = ("raw_passages", "single_no_title", "pairs_no_title", "full_windows")
+    mode_total_windows = {m: 0 for m in window_modes}
+    mode_cands = {m: [] for m in window_modes}
     unique_pairs = set()
 
     for ex in examples:
-        clean_title = re.sub(r"\(.*?\)", " ", ex.passages[0].get("title", "")) if ex.passages else ""
-        title_tokens = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", clean_title.lower())}
-        fact_words = checker.word_checker.preprocess(ex.fact, exclude_tokens=title_tokens)
-        if not fact_words:
-            fact_words = checker.word_checker.preprocess(ex.fact)
-
-        windows = checker.get_windows(ex.passages)
-        total_windows += len(windows)
-        cands = []
-        if fact_words:
-            for raw_sent, context in windows:
-                sent_words = {stemmer.stem(tok) for tok in re.findall(r"[a-z0-9]+", raw_sent.lower())}
-                overlap = len(fact_words & sent_words) / len(fact_words)
-                if overlap >= 0.15:
-                    cands.append((overlap, -len(raw_sent), context))
-        cands.sort(reverse=True)
-        per_ex_cands.append(cands)
-        for min_ov in (0.15, 0.20, 0.25, 0.30, 0.34):
-            for ov, _, ctx in [c for c in cands if c[0] >= min_ov][:5]:
-                unique_pairs.add((ctx, ex.fact))
+        for mode in window_modes:
+            windows = build_variant_windows(ex.passages, mode, checker)
+            mode_total_windows[mode] += len(windows)
+            min_ov = 0.15 if mode == "full_windows" else 0.20
+            cands = rank_candidates(ex, windows, checker.word_checker, min_overlap=min_ov)
+            mode_cands[mode].append(cands)
+            ov_cuts = (0.15, 0.20, 0.25, 0.30, 0.34) if mode == "full_windows" else (0.20,)
+            for cut in ov_cuts:
+                for _, _, ctx in [c for c in cands if c[0] >= cut][:5]:
+                    unique_pairs.add((ctx, ex.fact))
 
     sorted_pairs = sorted(unique_pairs, key=lambda pair: len(pair[0]) + len(pair[1]))
     pair_probs = {}
@@ -64,7 +138,7 @@ def score_unique_candidates(examples, checker, hf_model, tokenizer, device: str)
             pair_probs[pair] = (float(pr[0]), float(pr[1]), float(pr[2]))
         del inputs, logits, probs
 
-    return total_windows, per_ex_cands, pair_probs
+    return mode_total_windows, mode_cands, pair_probs
 
 
 def simulate_setting(examples, per_ex_cands, pair_probs, golds, prune_thr: float, ent_thr: float, use_guard: bool, use_argmax: bool):
@@ -115,13 +189,28 @@ def run_tune_and_analyze(labels_path: str, passages_path: str, export_path: str,
     checker = EntailmentFactChecker(ent_model)
 
     t0 = time.perf_counter()
-    total_windows, per_ex_cands, pair_probs = score_unique_candidates(
+    mode_total_windows, mode_cands, pair_probs = score_unique_candidates(
         examples, checker, hf_model, tokenizer, device
     )
+    total_windows = mode_total_windows["full_windows"]
+    per_ex_cands = mode_cands["full_windows"]
     print(f"Scored {len(pair_probs)} unique candidate pairs on {device} in {time.perf_counter() - t0:.1f}s")
     print(f"Total contextual 1&2-sentence windows across dataset: {total_windows}\n")
 
-    print("=== Part 2 Decision Rule & Threshold Sweep (prune_threshold=0.20) ===")
+    print("=== Part 2 Preprocessing Ablation (prune=0.20, guard+P(ent)>=0.38, Top-5) ===")
+    mode_labels = (
+        ("raw_passages", "Raw BM25 Passages (unsplit chunks)"),
+        ("single_no_title", "Cleaned Single Sentences (no 2-sent, no title)"),
+        ("pairs_no_title", "Cleaned 1&2-Sent Windows (no title prefix)"),
+        ("full_windows", "Full get_windows() (1&2-sent + title) [selected]"),
+    )
+    for mode, label in mode_labels:
+        m_wins = mode_total_windows[mode]
+        acc, calls, _ = simulate_setting(examples, mode_cands[mode], pair_probs, golds, 0.20, 0.38, True, False)
+        saved = (1.0 - calls / m_wins) * 100
+        print(f"{label:50s} | Acc={acc * 100:.2f}% ({int(round(acc * len(golds)))}/{len(golds)}) | Calls={calls}/{m_wins} ({saved:.2f}% saved)")
+
+    print("\n=== Part 2 Decision Rule & Threshold Sweep (prune_threshold=0.20) ===")
     acc_arg, calls_arg, _ = simulate_setting(examples, per_ex_cands, pair_probs, golds, 0.20, 0.0, False, True)
     print(f"Discrete argmax == 0       | Acc={acc_arg * 100:.2f}% | Calls={calls_arg}/{total_windows}")
     acc_noguard, calls_ng, _ = simulate_setting(examples, per_ex_cands, pair_probs, golds, 0.20, 0.38, False, False)

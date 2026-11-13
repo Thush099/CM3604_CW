@@ -31,7 +31,7 @@ Pass `--cuda` with `--mode entailment` if running on a CUDA-enabled GPU.
 
 - `eda.py`: Explores biography/fact counts, S/NS/IR label distribution, and passage length statistics.
 - `experiments_part1.py`: Runs Part 1 preprocessing, metric, and threshold ablations with 5-fold grouped cross-validation.
-- `tune_and_analyze.py`: Checks Part 2 threshold/pruning sensitivity and exports Part 3 FP/FN errors for analysis.
+- `tune_and_analyze.py`: Checks Part 2 windowing/threshold/pruning ablations and exports Part 3 FP/FN errors for analysis.
 
 ## Results
 
