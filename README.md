@@ -1,6 +1,6 @@
 # CM3604 - Deep Learning Coursework
 
-Group coursework for CM3604 Deep Learning (Robert Gordon University).
+Automated fact-checking of ChatGPT-generated biographies against Wikipedia passages (FActScore dataset), Robert Gordon University.
 
 ## Group Members
 - Thushanth Mahendran
@@ -9,7 +9,7 @@ Group coursework for CM3604 Deep Learning (Robert Gordon University).
 
 ## Setup
 
-Make sure Python 3.10 is installed, then install the required packages:
+Create a Python 3.10 virtual environment and install the required packages:
 
 ```bash
 python3.10 -m venv .venv
@@ -17,26 +17,26 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Place `dev_labeled_ChatGPT.jsonl` and `passages_bm25_ChatGPT_humfacts.jsonl` inside the `data/` folder before running.
+## Running the Evaluator
 
-## Running the Code
-
-Part 1 (Word Overlap):
 ```bash
+python factchecking_main.py --mode always_entail
 python factchecking_main.py --mode word_overlap
-```
-
-Part 2 (Textual Entailment):
-```bash
 python factchecking_main.py --mode entailment
 ```
 
-## Experiments & Report
-- `experiments/ablation_study.py`: Part 1 preprocessing/metric ablations and 5-fold grouped cross-validation (`--with-part2` includes DeBERTa ablations).
-- `experiments/error_analysis.py`: Exports Part 3 False Positives/Negatives and validates `experiments/error_analysis_sheet.csv`.
-- `report/CM3604_Coursework_Report.pdf`: Written report (compiled from `report/report.md` via `scripts/render_report_pdf.py`).
+Pass `--cuda` with `--mode entailment` if running on a CUDA-enabled GPU.
+
+## Helper Scripts
+
+- `eda.py`: Explores biography/fact counts, S/NS/IR label distribution, and passage length statistics.
+- `experiments_part1.py`: Runs Part 1 preprocessing, metric, and threshold ablations with 5-fold grouped cross-validation.
+- `tune_and_analyze.py`: Checks Part 2 threshold/pruning sensitivity and exports Part 3 FP/FN errors for analysis.
 
 ## Results
-- Majority baseline (`always_entail`): 112/221 (50.68%)
-- Part 1 (`word_overlap`): 186/221 (84.16%)
-- Part 2 (`entailment`): 195/221 (88.24%)
+
+| Mode | Accuracy | Correct / Total |
+| :--- | :---: | :---: |
+| `always_entail` | 50.68% | 112 / 221 |
+| `word_overlap` | 84.16% | 186 / 221 |
+| `entailment` | 88.24% | 195 / 221 |
