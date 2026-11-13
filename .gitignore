@@ -1,9 +1,9 @@
-# Python virtual environments
+# Virtual environments
 .venv/
 venv/
 env/
 
-# Byte-compiled / caches
+# Python caches
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,14 +11,14 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Datasets & large passage files (keep out of Git if large; share via Moodle download)
-data/*.jsonl
+# Generated experiment & error analysis outputs (keep starter data/*.jsonl tracked)
+*.csv
 *.jsonl
-*.zip
-*.tar.gz
-experiments/results/errors_*
+!data/dev_labeled_ChatGPT.jsonl
+!data/passages_bm25_ChatGPT_humfacts.jsonl
+errors_*.json
 
-# HuggingFace / PyTorch / NLTK local caches
+# Local caches & model weights
 .cache/
 models/
 *.pt
@@ -26,10 +26,8 @@ models/
 *.bin
 *.safetensors
 
-# Jupyter Notebooks checkpoints
+# Jupyter / OS / Editor files
 .ipynb_checkpoints/
-
-# OS & Editor files
 .DS_Store
 Thumbs.db
 .vscode/
